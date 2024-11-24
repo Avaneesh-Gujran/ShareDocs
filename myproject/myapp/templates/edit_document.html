@@ -92,7 +92,7 @@
             <input type="hidden" name="content" id="content">
             <button type="submit" class="save-button" onclick="saveContent()">Save Changes</button>
         </form>
-        <a href="{% url 'generate_pdf' document.id %}">
+        <a href="{% url 'export_to_pdf' document.id %}">
             <button type="button">Download PDF</button>
         </a>
     </div>

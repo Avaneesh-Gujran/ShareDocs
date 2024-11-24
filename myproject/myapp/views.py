@@ -1,7 +1,7 @@
 from django.shortcuts import render
 from .forms import DocumentForm
 # Create your views here.
-from wkhtmltopdf.views import PDFTemplateResponse
+
 from django.template.loader import render_to_string
 from django.shortcuts import render, get_object_or_404, redirect
 from .models import Document
@@ -11,6 +11,9 @@ from .models import Document, Cursor
 from .forms import SignupForm
 from .models import User
 from django.contrib import messages
+from django.template.loader import render_to_string
+
+from xhtml2pdf import pisa
 from django.http import HttpResponse
 from django.contrib.auth import authenticate, login
 
@@ -94,22 +97,44 @@ def update_cursor(request, document_id):
     return JsonResponse({'error': 'Invalid method'}, status=405)
 
 
-def generate_pdf(request, document_id):
-    # Get the document object
-    document = get_object_or_404(Document, id=document_id)
-    
-    # Render the template as a string
-    context = {'document': document}
-    
-    # Generate the PDF
-    response = PDFTemplateResponse(
-        request=request,
-        template='document_pdf.html',
-        context=context,
-        filename=f'{document.title}.pdf',
-        show_content_in_browser=False,  # Set to True to display in browser
-        cmd_options={'quiet': True},  # Suppresses wkhtmltopdf logs
-    )
+import bleach
+
+def clean_html(raw_html):
+    # Define allowed tags and attributes
+    allowed_tags = ['b', 'i', 'u', 'em', 'strong', 'p', 'br', 'div', 'span', 'font']
+    allowed_attributes = {
+        'span': ['style'],
+        'font': ['face', 'color', 'size'],
+        'div': ['style'],
+        'p': ['style'],
+    }
+
+    # Clean the HTML
+    return bleach.clean(raw_html, tags=allowed_tags, attributes=allowed_attributes, strip=True)
+
+
+
+def export_to_pdf(request, document_id):
+    # Fetch the document from the database
+    document = Document.objects.get(id=document_id)
+
+    # Clean the document content
+    cleaned_content = clean_html(document.content)
+
+    # Render the template with cleaned content
+    html_content = render_to_string('document_pdf.html', {'document': document, 'cleaned_content': cleaned_content})
+
+    # Generate PDF
+    response = HttpResponse(content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="{document.title}.pdf"'
+
+    # Use pisa to convert HTML to PDF
+    pisa_status = pisa.CreatePDF(html_content, dest=response)
+
+    # Handle errors
+    if pisa_status.err:
+        return HttpResponse('An error occurred while generating the PDF', status=500)
+
     return response
 
 def user_login(request):
@@ -117,13 +142,16 @@ def user_login(request):
         email = request.POST['username']
         password = request.POST['password']
 
-        print("username: ",email," password:",password)
-        user = authenticate(request, email=email, password=password)
-        if user is not None:
-            login(request, user)
-            return redirect('dashboard')  # Replace with the desired post-login redirect
-        else:
-            print("incorrect")
+        try:
+            user = User.objects.get(email=email)
+            
+            if user.password == password:  # Compare plaintext password
+                login(request, user)  # Django session login
+                return redirect('dashboard')
+            else:
+                messages.error(request, "Invalid email or password.")
+                return redirect('login')
+        except User.DoesNotExist:
             messages.error(request, "Invalid email or password.")
             return redirect('login')
 
@@ -131,20 +159,28 @@ def user_login(request):
 
 def signup(request):
     if request.method == 'POST':
-        form = SignupForm(request.POST)
-        if form.is_valid():
-            user = User.objects.create_user(
-                email=form.cleaned_data['email'],
-                name=form.cleaned_data['name'],
-                phone_number=form.cleaned_data['phone_number'],
-                password=form.cleaned_data['password']
-            )
-            
-            messages.success(request, "Signup successful! You can now log in.")
-            return redirect('login')
-        else:
-            messages.error(request, "Signup failed. Please correct the errors below.")
-    else:
-        form = SignupForm()
+        name = request.POST['name']
+        email = request.POST['email']
+        phone_number = request.POST['phone_number']
+        password = request.POST['password']
 
-    return render(request, 'signup.html', {'form': form})
+        if User.objects.filter(email=email).exists():
+            messages.error(request, "Email already exists.")
+            return redirect('signup')
+
+        if User.objects.filter(phone_number=phone_number).exists():
+            messages.error(request, "Phone number already exists.")
+            return redirect('signup')
+
+        # Store password as plaintext
+        user = User.objects.create(
+            name=name,
+            email=email,
+            phone_number=phone_number,
+            password=password  # Store password directly
+        )
+        messages.success(request, "Signup successful! You can now log in.")
+        return redirect('login')
+
+    return render(request, 'signup.html')
+
